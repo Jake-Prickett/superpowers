@@ -103,6 +103,12 @@ git commit -m "feat: add specific feature"
 ```
 ````
 
+## Agent Assignment
+
+If the session context includes a **Project Agents** section, you MUST assign each task in the plan to the named agent whose domain matches the work. Reference the agent by name in the task header using the format: `[agent: <name>]`. Do not spawn generic subagents for work that a named project agent covers.
+
+If no Project Agents section is present, use generic agent descriptions.
+
 ## Remember
 - Exact file paths always
 - Complete code in plan (not "add validation")

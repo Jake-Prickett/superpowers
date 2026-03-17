@@ -17,6 +17,73 @@ fi
 # Read using-superpowers content
 using_superpowers_content=$(cat "${PLUGIN_ROOT}/skills/using-superpowers/SKILL.md" 2>&1 || echo "Error reading using-superpowers skill")
 
+# Discover project-specific agents from .claude/agents/*.md
+AGENTS_DIR="$(pwd)/.claude/agents"
+AGENT_ROSTER=""
+
+if [ -d "$AGENTS_DIR" ]; then
+  for agent_file in "$AGENTS_DIR"/*.md; do
+    [ -f "$agent_file" ] || continue
+
+    # Extract name from YAML frontmatter (single-line value only)
+    agent_name=$(awk '
+      /^---/{f=!f;next}
+      f && /^name:/{sub(/^name: */,""); print; exit}
+    ' "$agent_file")
+
+    # Extract description from YAML frontmatter.
+    # Handles both single-line (description: Some text) and
+    # block scalars (description: | or description: >) by reading
+    # subsequent indented lines until a non-indented line is reached.
+    agent_desc=$(awk '
+      /^---/{f=!f;next}
+      f && /^description:/{
+        if (match($0, /^description: *[|>]/)) {
+          block=1; desc=""
+        } else {
+          sub(/^description: */, ""); desc=$0; print desc; exit
+        }
+        next
+      }
+      f && block && /^[[:space:]]/{
+        sub(/^[[:space:]]+/, "")
+        desc = (desc == "") ? $0 : desc " " $0
+        next
+      }
+      f && block && /^[^[:space:]]/{
+        print desc; exit
+      }
+      END { if (block && desc != "") print desc }
+    ' "$agent_file")
+
+    # Sanitize: strip backticks and $() to prevent command injection
+    agent_name=$(echo "$agent_name" | tr -d '`$()\\')
+    agent_desc=$(echo "$agent_desc" | tr -d '`$()\\' | sed 's/"/\\"/g')
+
+    if [ -n "$agent_name" ] && [ -n "$agent_desc" ]; then
+      AGENT_ROSTER="${AGENT_ROSTER}
+### ${agent_name}
+${agent_desc}
+"
+    fi
+  done
+fi
+
+# Build project agents section (empty string if no agents found).
+# NOTE: This injects agent context on every session start, even for non-planning sessions.
+# This is an intentional trade-off: the token cost is small and the benefit for planning
+# sessions outweighs the overhead. If this project grows to many agents, consider
+# gating injection on a flag file (e.g., .claude/agents/.inject).
+PROJECT_AGENTS_SECTION=""
+if [ -n "$AGENT_ROSTER" ]; then
+  PROJECT_AGENTS_SECTION="
+
+## Project Agents
+
+This project defines specialized sub-agents. When writing plans or dispatching tasks, assign work to these agents by name rather than spawning generic subagents. Use the Agent tool with \`subagent_type\` set to the agent name.
+${AGENT_ROSTER}"
+fi
+
 # Escape string for JSON embedding using bash parameter substitution.
 # Each ${s//old/new} is a single C-level pass - orders of magnitude
 # faster than the character-by-character loop this replaces.
@@ -32,7 +99,8 @@ escape_for_json() {
 
 using_superpowers_escaped=$(escape_for_json "$using_superpowers_content")
 warning_escaped=$(escape_for_json "$warning_message")
-session_context="<EXTREMELY_IMPORTANT>\nYou have superpowers.\n\n**Below is the full content of your 'superpowers:using-superpowers' skill - your introduction to using skills. For all other skills, use the 'Skill' tool:**\n\n${using_superpowers_escaped}\n\n${warning_escaped}\n</EXTREMELY_IMPORTANT>"
+project_agents_escaped=$(escape_for_json "$PROJECT_AGENTS_SECTION")
+session_context="<EXTREMELY_IMPORTANT>\nYou have superpowers.\n\n**Below is the full content of your 'superpowers:using-superpowers' skill - your introduction to using skills. For all other skills, use the 'Skill' tool:**\n\n${using_superpowers_escaped}\n\n${warning_escaped}\n${project_agents_escaped}\n</EXTREMELY_IMPORTANT>"
 
 # Output context injection as JSON.
 # Cursor hooks expect additional_context.
